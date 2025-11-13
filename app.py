@@ -1,27 +1,25 @@
-# app.py (Fully Corrected and Error-Free)
-# Streamlit Supply Chain Dashboard with Insights + Improved Charts
+# app.py
+# Fully corrected Streamlit dashboard for Fashion Supply Chain Management
+# Run: streamlit run app.py
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
 
 st.set_page_config(page_title="Fashion Supply Chain Management — Enhanced", layout="wide")
 
-# =============================================================
-# DATA LOADING
-# =============================================================
+# ---------- Helpers ----------
 @st.cache_data
 def load_data(uploaded_file):
+    """Load CSV or return a small synthetic demo dataset if no file provided."""
     if uploaded_file is None:
         rng = np.random.default_rng(42)
         n = 300
         dates = pd.date_range(end=pd.Timestamp.today(), periods=n)
         products = [f"Product_{i}" for i in range(1, 21)]
         cats = ["Apparel", "Footwear", "Accessories", "Home"]
-
         df = pd.DataFrame({
             "Date": rng.choice(dates, size=n),
             "Product": rng.choice(products, size=n),
@@ -31,170 +29,263 @@ def load_data(uploaded_file):
             "Lead_Time_Days": rng.integers(1, 30, size=n),
             "Cost": (rng.random(n) * 200).round(2)
         })
-
         df["Date"] = pd.to_datetime(df["Date"]).dt.date
         return df
 
-    # If file uploaded
+    # attempt reading uploaded CSV
     try:
         df = pd.read_csv(uploaded_file)
     except Exception:
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, encoding='latin1')
 
+    # Normalize column names
     df.columns = [c.strip() for c in df.columns]
 
     required = ["Date", "Product", "Category", "Sales", "Inventory", "Lead_Time_Days", "Cost"]
     missing = [c for c in required if c not in df.columns]
-
     if missing:
-        st.warning(f"Missing columns: {missing}. Demo dataset loaded instead.")
+        st.warning(f"Missing required columns: {missing}. Demo dataset will be used instead.")
         return load_data(None)
 
-    df["Date"] = pd.to_datetime(df["Date"]).dt.date
+    # Cast types safely
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     for c in ["Sales", "Inventory", "Lead_Time_Days", "Cost"]:
-        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    # Drop rows with invalid dates (if any) and convert Date to date (no time)
+    df = df.dropna(subset=["Date"]).copy()
+    df["Date"] = pd.to_datetime(df["Date"]).dt.date
 
     return df
 
-# =============================================================
-# INSIGHT GENERATOR
-# =============================================================
 def generate_insights(df):
+    """Produce a list of short human-readable insights from the filtered dataframe."""
     insights = []
+    if df is None or len(df) == 0:
+        insights.append("No data available for insight generation.")
+        return insights
+
+    # Ensure numeric columns exist
+    for col in ["Sales", "Inventory", "Lead_Time_Days", "Cost"]:
+        if col not in df.columns:
+            df[col] = 0
 
     total_sales = df['Sales'].sum()
-    avg_order_value = df['Sales'].mean()
-    median_lead = df['Lead_Time_Days'].median()
-    avg_inventory = df['Inventory'].mean()
+    avg_order_value = df['Sales'].mean() if len(df) else 0
+    median_lead = df['Lead_Time_Days'].median() if len(df) else 0
+    avg_inventory = df['Inventory'].mean() if len(df) else 0
 
-    insights.append(f"Total sales: ₹{total_sales:,.2f} across {df['Product'].nunique()} unique products.")
-    insights.append(f"Average sales per record: ₹{avg_order_value:,.2f}.")
-    insights.append(f"Median lead time: {median_lead} days. Average inventory: {avg_inventory:.1f} units.")
+    insights.append(f"Total sales (sum): ₹{total_sales:,.2f} across {df['Product'].nunique()} unique products.")
+    insights.append(f"Average sales per record (approx. AOV): ₹{avg_order_value:,.2f}.")
+    insights.append(f"Median lead time: {median_lead:.1f} days. Average inventory level: {avg_inventory:.1f} units.")
 
     # Top category
-    top_cat = df.groupby('Category')['Sales'].sum().sort_values(ascending=False)
-    if not top_cat.empty:
-        cat = top_cat.index[0]
-        pct = top_cat.iloc[0] / top_cat.sum() * 100
-        insights.append(f"Top category: {cat} ({pct:.1f}% of all sales).")
+    try:
+        top_cat = df.groupby('Category')['Sales'].sum().sort_values(ascending=False)
+        if not top_cat.empty:
+            top_cat_name = top_cat.index[0]
+            top_cat_pct = 100 * top_cat.iloc[0] / top_cat.sum() if top_cat.sum() != 0 else 0
+            insights.append(f"Top category by sales: {top_cat_name} contributing {top_cat_pct:.1f}% of category sales.")
+    except Exception:
+        pass
 
-    # Top 5 products
-    top_products = df.groupby('Product')['Sales'].sum().sort_values(ascending=False).head(5)
-    if not top_products.empty:
-        summary = ", ".join([f"{p} (₹{v:,.0f})" for p, v in top_products.items()])
-        insights.append(f"Top 5 products: {summary}.")
+    # Top products
+    try:
+        top_products = df.groupby('Product')['Sales'].sum().sort_values(ascending=False).head(5)
+        if not top_products.empty:
+            p_list = ", ".join([f"{p} (₹{s:,.0f})" for p, s in top_products.items()])
+            insights.append(f"Top 5 products by sales: {p_list}.")
+    except Exception:
+        pass
 
-    # Low Inventory
-    low_stock = df.groupby('Product')['Inventory'].mean().sort_values()
-    low_stock = low_stock[low_stock < 20].head(5)
-    if not low_stock.empty:
-        ls = ", ".join([f"{p} ({int(v)} units)" for p, v in low_stock.items()])
-        insights.append(f"Low stock items (<20 units): {ls}.")
+    # Low inventory products
+    try:
+        low_stock = df.groupby('Product')['Inventory'].mean().sort_values().head(10)
+        low_stock_small = low_stock[low_stock < 20]
+        if not low_stock_small.empty:
+            ls = ", ".join([f"{p} ({int(q)} units avg)" for p, q in low_stock_small.items()])
+            insights.append(f"Products with low average inventory (<20 units): {ls}. Consider restocking soon.")
+    except Exception:
+        pass
 
-    # Correlation
-    corr = df[['Sales', 'Inventory', 'Lead_Time_Days', 'Cost']].corr()
-    strong = []
-    for a in corr.columns:
-        for b in corr.columns:
-            if a != b:
-                if abs(corr.loc[a, b]) >= 0.6:
-                    strong.append(f"{a} vs {b}: {corr.loc[a,b]:.2f}")
+    # Correlations
+    try:
+        corr = df[['Sales', 'Inventory', 'Lead_Time_Days', 'Cost']].corr()
+        strong_corrs = []
+        for a in corr.columns:
+            for b in corr.columns:
+                if a == b:
+                    continue
+                val = corr.loc[a, b]
+                if abs(val) >= 0.6:
+                    strong_corrs.append(f"{a} vs {b}: {val:.2f}")
+        if strong_corrs:
+            insights.append("Strong correlations detected: " + "; ".join(strong_corrs) + ".")
+    except Exception:
+        pass
 
-    if strong:
-        insights.append("Strong correlations: " + "; ".join(strong) + ".")
-
-    # Trend
-    ts = df.copy()
-    ts['Date'] = pd.to_datetime(ts['Date'])
-    ts = ts.set_index('Date').resample('M').sum()
-
-    if len(ts) >= 2:
-        last, prev = ts['Sales'].iloc[-1], ts['Sales'].iloc[-2]
-        if prev != 0:
-            pct = (last - prev) / prev * 100
-            if pct > 5:
-                insights.append(f"Sales increased by {pct:.1f}% last month.")
-            elif pct < -5:
-                insights.append(f"Sales decreased by {abs(pct):.1f}% last month.")
+    # Trend insight (month over month)
+    try:
+        if 'Date' in df.columns:
+            ts = df.copy()
+            ts['Date'] = pd.to_datetime(ts['Date'])
+            ts = ts.set_index('Date').resample('M').sum()
+            if len(ts) >= 2 and 'Sales' in ts.columns:
+                last = ts['Sales'].iloc[-1]
+                prev = ts['Sales'].iloc[-2]
+                if prev != 0:
+                    pct = (last - prev) / prev * 100
+                    if pct > 5:
+                        insights.append(f"Sales increased by {pct:.1f}% month-over-month (last month vs previous). Positive growth.")
+                    elif pct < -5:
+                        insights.append(f"Sales decreased by {abs(pct):.1f}% month-over-month (last month vs previous). Investigate causes.")
+    except Exception:
+        pass
 
     return insights
 
-# =============================================================
-# UI START
-# =============================================================
-st.title("📈 Fashion Supply Chain Management Dashboard")
-st.markdown("Upload CSV containing: Date, Product, Category, Sales, Inventory, Lead_Time_Days, Cost")
+# ---------- UI ----------
+st.title("📈 Fashion Supply Chain Management — Insights & Improved Charts")
+st.markdown("Upload your dataset (CSV) with columns: Date, Product, Category, Sales, Inventory, Lead_Time_Days, Cost.")
 
-uploaded = st.file_uploader("Upload CSV", type=['csv'])
+uploaded = st.file_uploader("Upload CSV or leave empty to use a demo dataset", type=['csv'])
 df = load_data(uploaded)
 
-# Sidebar
-st.sidebar.header("Filters")
-with st.sidebar.form("filters"):
-    category_filter = st.multiselect("Category", df['Category'].unique(), default=list(df['Category'].unique()))
-    date_min = st.date_input("Start Date", df['Date'].min())
-    date_max = st.date_input("End Date", df['Date'].max())
-    reorder_threshold = st.number_input("Reorder threshold", min_value=0, value=20)
-    submitted = st.form_submit_button("Apply Filters")
+# Sidebar: filters and controls
+st.sidebar.header("Filters & Controls")
+with st.sidebar.form("controls"):
+    categories = sorted(df['Category'].unique()) if 'Category' in df.columns else []
+    category_filter = st.multiselect("Category", options=categories, default=categories)
+    # Provide safe defaults for date inputs (if Date column missing, use today)
+    try:
+        min_date = pd.to_datetime(df['Date']).min().date()
+        max_date = pd.to_datetime(df['Date']).max().date()
+    except Exception:
+        min_date = pd.Timestamp.today().date()
+        max_date = pd.Timestamp.today().date()
+    date_min = st.date_input("From date", value=min_date)
+    date_max = st.date_input("To date", value=max_date)
+    reorder_threshold = st.number_input("Low inventory threshold (units)", min_value=0, value=20)
+    st.form_submit_button("Apply")
 
-mask = (
-    df['Category'].isin(category_filter) &
-    (pd.to_datetime(df['Date']) >= pd.to_datetime(date_min)) &
-    (pd.to_datetime(df['Date']) <= pd.to_datetime(date_max))
-)
-filtered = df.loc[mask]
+# Apply filters safely
+try:
+    mask = (
+        df['Category'].isin(category_filter) &
+        (pd.to_datetime(df['Date']) >= pd.to_datetime(date_min)) &
+        (pd.to_datetime(df['Date']) <= pd.to_datetime(date_max))
+    )
+    filtered = df.loc[mask].copy()
+except Exception:
+    # If something fails in filtering (e.g., missing columns), fall back to full df copy
+    filtered = df.copy()
 
 # KPIs
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Sales", f"₹{filtered['Sales'].sum():,.0f}")
-c2.metric("Products", filtered['Product'].nunique())
-c3.metric("Median Lead Time", f"{filtered['Lead_Time_Days'].median():.1f} days")
-c4.metric("Avg Inventory", f"{filtered['Inventory'].mean():.1f}")
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Total Sales (₹)", f"{filtered['Sales'].sum():,.0f}")
+with col2:
+    st.metric("Unique Products", f"{filtered['Product'].nunique() if 'Product' in filtered.columns else 0}")
+with col3:
+    st.metric("Avg Lead Time (days)", f"{filtered['Lead_Time_Days'].median():.1f}" if 'Lead_Time_Days' in filtered.columns else "0.0")
+with col4:
+    st.metric("Avg Inventory", f"{filtered['Inventory'].mean():.1f}" if 'Inventory' in filtered.columns else "0.0")
 
-# Insights
-st.header("📝 Clear Insights")
-for i, insight in enumerate(generate_insights(filtered), 1):
-    st.write(f"**{i}.** {insight}")
+# Insights box
+st.header("Clear written insights")
+insights = generate_insights(filtered)
+for i, ins in enumerate(insights, 1):
+    st.write(f"**{i}.** {ins}")
 
-# =============================================================
-# CHARTS
-# =============================================================
-st.header("📊 Visual Analysis")
+# Charts - improved quality using Plotly and layout tweaks
+st.header("Visual analysis")
 
-# Monthly Sales
-with st.expander("Monthly Sales Trend", expanded=True):
-    temp = filtered.copy()
-    temp['Date'] = pd.to_datetime(temp['Date'])
-    monthly = temp.set_index('Date').resample('M')['Sales'].sum().reset_index()
-    fig = px.line(monthly, x='Date', y='Sales', markers=True, title="Monthly Sales")
-    fig.update_traces(marker_size=8, line_width=3)
-    fig.update_layout(template='plotly_white', height=420)
-    st.plotly_chart(fig, use_container_width=True)
+# Sales over time
+with st.expander("Sales over time (monthly)", expanded=True):
+    if 'Date' in filtered.columns and 'Sales' in filtered.columns and len(filtered):
+        ts = filtered.copy()
+        ts['Date'] = pd.to_datetime(ts['Date'])
+        monthly = ts.set_index('Date').resample('M')['Sales'].sum().reset_index()
+        fig = px.line(monthly, x='Date', y='Sales', markers=True, title='Monthly Sales')
+        fig.update_traces(marker_size=8, line_width=3)
+        fig.update_layout(template='plotly_white', height=420, margin=dict(l=40, r=20, t=60, b=40), font=dict(size=12))
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("**Trend summary:** The chart above shows monthly aggregated sales. Check for seasonality or sudden drops/spikes.")
+    else:
+        st.info("Not enough data to render monthly sales chart.")
 
-# Category Pie
-with st.expander("Sales by Category"):
-    cat_sales = filtered.groupby('Category')['Sales'].sum().reset_index()
-    fig = px.pie(cat_sales, names='Category', values='Sales', hole=0.4, title="Sales by Category")
-    fig.update_layout(template='plotly_white', height=380)
-    st.plotly_chart(fig, use_container_width=True)
+# Top categories pie
+with st.expander("Sales by Category", expanded=False):
+    if 'Category' in filtered.columns and 'Sales' in filtered.columns and len(filtered):
+        cat_sales = filtered.groupby('Category')['Sales'].sum().reset_index().sort_values('Sales', ascending=False)
+        fig2 = px.pie(cat_sales, names='Category', values='Sales', title='Sales share by Category', hole=0.4)
+        fig2.update_layout(template='plotly_white', height=380, margin=dict(t=50, l=20, r=20))
+        st.plotly_chart(fig2, use_container_width=True)
+        top = cat_sales.iloc[0] if not cat_sales.empty else None
+        if top is not None:
+            st.write(f"Top category: **{top['Category']}** contributing **₹{top['Sales']:,.0f}** ({top['Sales']/cat_sales['Sales'].sum():.1%}).")
+    else:
+        st.info("Not enough data to show category breakdown.")
 
-# Top Products
-with st.expander("Top Products"):
-    prod = filtered.groupby('Product')['Sales'].sum().reset_index().sort_values('Sales', ascending=False).head(15)
-    fig = px.bar(prod, x='Sales', y='Product', orientation='h', title="Top Products")
-    fig.update_layout(template='plotly_white', height=520)
-    st.plotly_chart(fig, use_container_width=True)
+# Top products bar
+with st.expander("Top products by sales", expanded=False):
+    if 'Product' in filtered.columns and 'Sales' in filtered.columns and len(filtered):
+        prod = filtered.groupby('Product')['Sales'].sum().reset_index().sort_values('Sales', ascending=False).head(15)
+        fig3 = px.bar(prod, x='Sales', y='Product', orientation='h', title='Top products by Sales')
+        fig3.update_layout(template='plotly_white', height=520, margin=dict(l=200, t=40), yaxis={'categoryorder': 'total ascending'}, font=dict(size=12))
+        fig3.update_traces(marker_line_width=0.5)
+        st.plotly_chart(fig3, use_container_width=True)
+    else:
+        st.info("Not enough data to show top products.")
 
-# Scatter
-with st.expander("Inventory vs Sales"):
-    agg = filtered.groupby('Product').agg({'Sales': 'sum', 'Inventory': 'mean', 'Cost': 'mean'}).reset_index()
-    fig = px.scatter(agg, x='Inventory', y='Sales', size='Cost', hover_name='Product', title="Inventory vs Sales")
-    fig.update_layout(template='plotly_white', height=480)
-    st.plotly_chart(fig, use_container_width=True)
+# Inventory vs Sales scatter with size by cost
+with st.expander("Inventory vs Sales (product-level)", expanded=False):
+    if {'Product', 'Sales', 'Inventory', 'Cost'}.issubset(filtered.columns) and len(filtered):
+        agg = filtered.groupby('Product').agg({'Sales': 'sum', 'Inventory': 'mean', 'Cost': 'mean'}).reset_index()
+        fig4 = px.scatter(agg, x='Inventory', y='Sales', size='Cost', hover_name='Product', title='Inventory vs Sales (bubble = avg cost)')
+        fig4.update_layout(template='plotly_white', height=480, margin=dict(t=50))
+        st.plotly_chart(fig4, use_container_width=True)
+        st.markdown("**Insight tip:** Products far to the right with low sales are overstocked candidates; far left with high sales may need restock prioritization.")
+    else:
+        st.info("Not enough data to show inventory vs sales scatter.")
 
-# Correlation Heatmap
-with st.expander("Correlation Matrix"):
-    corr = filtered[["Sales", "Inventory", "Lead_Time_Days", "Cost"]].corr()
-    fig = go.Figure(data=go.Heatmap(z=corr, x=corr.columns, y=corr.columns, colorscale='RdBu', zmid=0))
-    fig.update
+# Correlation heatmap
+with st.expander("Correlation matrix", expanded=False):
+    if {'Sales', 'Inventory', 'Lead_Time_Days', 'Cost'}.issubset(filtered.columns) and len(filtered):
+        corr = filtered[['Sales', 'Inventory', 'Lead_Time_Days', 'Cost']].corr()
+        fig5 = go.Figure(data=go.Heatmap(z=corr.values, x=corr.columns, y=corr.columns, colorscale='RdBu', zmid=0))
+        fig5.update_layout(title='Correlation matrix', template='plotly_white', height=420)
+        st.plotly_chart(fig5, use_container_width=True)
+    else:
+        st.info("Not enough numeric columns to compute correlations.")
+
+# Inventory alerts
+st.header("Inventory alerts & recommendations")
+if 'Product' in filtered.columns and 'Inventory' in filtered.columns:
+    low_stock_df = filtered.groupby('Product')['Inventory'].mean().reset_index().sort_values('Inventory')
+    alerts = low_stock_df[low_stock_df['Inventory'] <= reorder_threshold]
+    if not alerts.empty:
+        st.warning(f"{len(alerts)} products below the reorder threshold ({reorder_threshold} units).")
+        st.dataframe(alerts.rename(columns={'Inventory': 'Avg_Inventory'}).head(50))
+    else:
+        st.success("No products below the reorder threshold in the selected filters.")
+else:
+    st.info("No inventory/product data to check for alerts.")
+
+# Download filtered data option
+st.markdown("---")
+csv_bytes = filtered.to_csv(index=False).encode('utf-8')
+st.download_button("Download filtered data (CSV)", data=csv_bytes, file_name='filtered_data.csv', mime='text/csv')
+
+# Footer & notes
+st.markdown("---")
+st.markdown(
+    "**What I changed / why this helps:**\n"
+    "1. Added a concise written insights section generated from your data so non-technical stakeholders can read quick takeaways.\n"
+    "2. Upgraded charts to Plotly for crisper, interactive visuals and tuned layout/font sizes for better readability.\n"
+    "3. Added inventory alerts and a download button for easy operational use.\n"
+    "4. Included a small demo dataset when no file is uploaded so the dashboard remains functional.\n"
+)
+
+st.markdown("If you'd like, I can add: reorder-point calculations, EOQ, margin analysis, demand forecasting, or a one-page PDF executive summary. Which would you like next?")
