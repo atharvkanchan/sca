@@ -40,7 +40,7 @@ except Exception:
     HAS_SHAP = False
 
 st.set_page_config(page_title="Enterprise Fashion Supply Chain Dashboard", layout="wide")
-st.title("🏬 Enterprise Fashion Supply Chain Dashboard — Pro")
+st.title("🏬 Fashion Supply Chain Dashboard — Pro")
 
 # =========================
 # Helper utilities
