@@ -94,7 +94,7 @@ def generate_insights(df):
             if abs(val) >= 0.6:
                 strong_corrs.append(f"{a} vs {b}: {val:.2f}")
     if strong_corrs:
-        insights.append("Strong correlations detected: " + "; ".join(strong_corrs) + \".\")
+    insights.append("Strong correlations detected: " + "; ".join(strong_corrs) + ".")
 
     # Trend insight (monthly)
     if 'Date' in df.columns:
