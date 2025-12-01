@@ -1,7 +1,10 @@
 # app.py
-# Enterprise-level Supply Chain Dashboard (All-in-One)
-# Updated: fixes for stability, performance, UX (form-based filters, caching, safer LR/Prophet plotting),
-# session_state for uploads, defensive checks, logging and minor cleanups.
+# Rebuilt Enterprise Supply Chain Dashboard (All-in-One)
+# - Stable LR forecasting (month index), safer Prophet plotting
+# - Form-based filters, caching, session_state for uploads
+# - Precomputed aggregates to avoid repeated groupbys
+# - Explainable insights under each chart (rule-based)
+# - Defensive checks, logging
 
 import logging
 from datetime import datetime
@@ -17,19 +20,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("supply_chain_dashboard")
 
 # -----------------------
-# Lazy / optional heavy imports
-# -----------------------
-HAS_SKLEARN = False
-HAS_PROPHET = False
-HAS_SHAP = False
-
-# We will import heavy libs only when needed (inside feature blocks) to reduce cold-start time.
-
-# -----------------------
 # Streamlit page config
 # -----------------------
 st.set_page_config(page_title="Enterprise Fashion Supply Chain Dashboard", layout="wide")
-st.title("🏬 Fashion Supply Chain Dashboard — Pro (updated)")
+st.title("🏬 Fashion Supply Chain Dashboard — Pro (rebuilt)")
 
 # -----------------------
 # Helper utilities
@@ -141,6 +135,119 @@ def compute_supplier_risk(df, supplier_col, lead_col):
     return s.sort_values('risk_score', ascending=False)
 
 
+# --------------------------------
+# Explainers toolkit (chart-level textual insights)
+# --------------------------------
+def pct_change_text(series):
+    """Return last vs previous pct change string, guarding divide-by-zero."""
+    if len(series) < 2:
+        return "Insufficient history to compute change."
+    last = float(series.iloc[-1])
+    prev = float(series.iloc[-2]) if len(series) >= 2 else 0.0
+    denom = prev if prev != 0 else 1.0
+    pct = (last - prev) / denom * 100.0
+    sign = "increased" if pct > 0 else "decreased" if pct < 0 else "no change"
+    return f"{sign} by {abs(pct):.1f}% vs previous period."
+
+
+def trend_slope_text(dates, values):
+    """Compute simple linear slope on month index and return human text."""
+    if len(values) < 3:
+        return ""
+    # convert dates to month index to avoid numeric instability
+    months = ((pd.to_datetime(dates).dt.year - pd.to_datetime(dates).dt.year.min()) * 12 +
+              pd.to_datetime(dates).dt.month).astype(int)
+    coef = np.polyfit(months, values, 1)
+    slope = coef[0]
+    if abs(slope) < 1e-8:
+        return "Flat trend overall."
+    direction = "upward" if slope > 0 else "downward"
+    return f"Longer-term trend is {direction} (slope ≈ {slope:.2f} sales / month)."
+
+
+def detect_spike(series, z_thresh=2.8):
+    """Simple z-score spike detection; returns list of (idx, value)."""
+    arr = np.array(series)
+    if len(arr) < 5:
+        return []
+    mu = np.nanmean(arr)
+    sigma = np.nanstd(arr) if np.nanstd(arr) != 0 else 1.0
+    z = (arr - mu) / sigma
+    idxs = np.where(np.abs(z) > z_thresh)[0]
+    return list(zip(idxs.tolist(), arr[idxs].tolist()))
+
+
+def top_contributors_change(prev_df, last_df, top_n=3, value_col="Sales", key_col="Product"):
+    """Given two groupby DataFrames (key_col, value_col) for previous and last period,
+       returns top gaining and losing contributors."""
+    prev = prev_df.set_index(key_col)[value_col] if not prev_df.empty else pd.Series(dtype=float)
+    last = last_df.set_index(key_col)[value_col] if not last_df.empty else pd.Series(dtype=float)
+    all_keys = sorted(set(prev.index).union(set(last.index)))
+    diffs = []
+    for k in all_keys:
+        diffs.append((k, float(last.get(k, 0.0)) - float(prev.get(k, 0.0))))
+    diffs = sorted(diffs, key=lambda x: x[1], reverse=True)
+    gaining = diffs[:top_n]
+    losing = diffs[-top_n:][::-1]
+    return gaining, losing
+
+
+def format_contribs(contribs):
+    """Format list of (key, delta) into readable sentence fragment."""
+    parts = []
+    for k, d in contribs:
+        parts.append(f"{k} ({'+' if d>=0 else ''}{d:,.0f})")
+    return ", ".join(parts) if parts else "none notable"
+
+
+def explain_timeseries(ts_df, date_col="Date", value_col="Sales"):
+    """High-level text for a timeseries aggregated DataFrame (Date, Sales)."""
+    # ensure sorted
+    ts = ts_df.sort_values(date_col).reset_index(drop=True)
+    if ts.empty:
+        return "No data for this period."
+    # pct change last vs prev
+    pct_text = pct_change_text(ts[value_col])
+    # slope
+    slope_text = trend_slope_text(ts[date_col], ts[value_col])
+    # spikes
+    spikes = detect_spike(ts[value_col])
+    spike_text = ""
+    if spikes:
+        spike_text = f" Notable spikes detected at {len(spikes)} point(s)."
+    # seasonality hint: compare last 12 months average vs previous 12 months if available
+    season_text = ""
+    if len(ts) >= 24:
+        last12 = ts[value_col].iloc[-12:].mean()
+        prev12 = ts[value_col].iloc[-24:-12].mean()
+        diff = (last12 - prev12) / (prev12 if prev12 != 0 else 1) * 100.0
+        season_text = f" 12-month avg changed by {diff:.1f}% vs previous 12 months."
+    return " ".join([pct_text, slope_text, spike_text, season_text]).strip()
+
+
+def explain_treemap_or_donut(df, group_col="Category", value_col="Sales", prev_df=None):
+    """
+    Explain composition: top category and concentration and optionally change vs prev period.
+    prev_df (optional) should be a df grouped the same way for previous period.
+    """
+    s = df.groupby(group_col)[value_col].sum().sort_values(ascending=False)
+    if s.empty:
+        return "No category sales available."
+    top = s.index[0]
+    pct = s.iloc[0] / s.sum() * 100 if s.sum() != 0 else 0
+    text = f"Top: **{top}** ({pct:.1f}% of total)."
+    # concentration check
+    if pct > 60:
+        text += " High concentration — consider diversifying top categories."
+    # compare prev if available
+    if prev_df is not None:
+        prev_s = prev_df.groupby(group_col)[value_col].sum()
+        prev_top_val = prev_s.get(top, 0.0)
+        delta = s.iloc[0] - prev_top_val
+        text += f" {top} changed by {delta:,.0f} vs previous period."
+    return text
+
+
 # -----------------------
 # Upload / demo dataset handling (session_state)
 # -----------------------
@@ -149,7 +256,7 @@ st.sidebar.header("Dataset & Settings")
 if 'uploaded_dfs' not in st.session_state:
     st.session_state.uploaded_dfs = []
 
-uploaded_files = st.sidebar.file_uploader("Upload one or more CSVs (optional)", accept_multiple_files=True, type=["csv"]) 
+uploaded_files = st.sidebar.file_uploader("Upload one or more CSVs (optional)", accept_multiple_files=True, type=["csv"])
 
 # When user uploads, read and append to session_state to avoid re-reading every rerun
 if uploaded_files:
@@ -266,8 +373,6 @@ rename_map = {
     cost_col: 'Cost',
     supplier_col: 'Supplier'
 }
-
-# apply rename (only keys that exist)
 rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
 try:
     df = df.rename(columns=rename_map)
@@ -308,7 +413,7 @@ with st.sidebar.form('filters_form'):
 
     apply_filters = st.form_submit_button('Apply filters')
 
-# If user hasn't applied filters yet, we continue using defaults
+# If user hasn't applied filters yet, we continue using defaults but show info
 if not apply_filters:
     st.info('Adjust filters on the left and click "Apply filters" to refresh analysis.')
 
@@ -340,7 +445,7 @@ def precompute_aggregates(fdf: pd.DataFrame) -> dict:
         # monthly sales
         monthly_sales = fdf.set_index('Date').resample('M')['Sales'].sum().reset_index().sort_values('Date')
         # product-level aggregates
-        product_agg = fdf.groupby('Product').agg({'Sales':'sum', 'Inventory':'mean', 'Lead_Time_Days':'mean', 'Cost':'mean'}).reset_index()
+        product_agg = fdf.groupby('Product').agg({'Sales': 'sum', 'Inventory': 'mean', 'Lead_Time_Days': 'mean', 'Cost': 'mean'}).reset_index()
         # category-product for treemap
         treemap_df = fdf.groupby(['Category', 'Product'])['Sales'].sum().reset_index()
         # supplier-category
@@ -399,7 +504,7 @@ with ins_col1:
 
 with ins_col2:
     try:
-        low_products = aggs['product_agg'][['Product', 'Inventory']].rename(columns={'Inventory':'AvgInventory'})
+        low_products = aggs['product_agg'][['Product', 'Inventory']].rename(columns={'Inventory': 'AvgInventory'})
         low_count = int((low_products['AvgInventory'] < 20).sum())
         st.markdown('#### 📦 Inventory Insight')
         st.write(f"Products with avg inventory < 20 units: **{low_count}**")
@@ -482,31 +587,40 @@ def executive_summary(df_in):
         pass
     return ' '.join(lines)
 
+
 st.markdown('### 🧾 Executive summary')
 st.write(executive_summary_cached(fdf))
 
 # -----------------------
-# Visualizations
+# Visualizations (with explainers under each chart)
 # -----------------------
 st.markdown('---')
 st.header('Visual analysis — Mixed chart pack')
 
-# Treemap
+# Treemap: Category -> Product
 try:
     treemap_df = aggs['treemap']
     fig_treemap = px.treemap(treemap_df, path=['Category', 'Product'], values='Sales', title='Treemap: Sales by Category & Product', template=theme_choice)
     st.plotly_chart(fig_treemap, use_container_width=True)
+    # explain treemap
+    txt = explain_treemap_or_donut(treemap_df, group_col='Category', value_col='Sales')
+    st.markdown(f"**Insight — Category composition:** {txt}")
 except Exception as e:
     st.info('Treemap not available for this selection.')
     logger.exception(e)
 
-# Sunburst supplier->category
-try:
-    sun = aggs['supplier_cat']
-    fig_sun = px.sunburst(sun, path=['Supplier', 'Category'], values='Sales', title='Supplier -> Category Sales (Sunburst)', template=theme_choice)
-    st.plotly_chart(fig_sun, use_container_width=True)
-except Exception:
-    pass
+# Sunburst if supplier present
+if 'Supplier' in fdf.columns:
+    try:
+        sun = aggs['supplier_cat']
+        fig_sun = px.sunburst(sun, path=['Supplier', 'Category'], values='Sales', title='Supplier -> Category Sales (Sunburst)', template=theme_choice)
+        st.plotly_chart(fig_sun, use_container_width=True)
+        # explain sunburst - top supplier highlight
+        top_sup = fdf.groupby('Supplier')['Sales'].sum().sort_values(ascending=False)
+        if not top_sup.empty:
+            st.markdown(f"**Insight — Supplier:** Top supplier is **{top_sup.index[0]}** contributing ₹{top_sup.iloc[0]:,.0f} of filtered sales.")
+    except Exception:
+        pass
 
 # Area cumulative sales
 try:
@@ -514,6 +628,15 @@ try:
     area['Cumulative'] = area['Sales'].cumsum()
     fig_area = px.area(area, x='Date', y='Cumulative', title='Cumulative Sales Over Time', template=theme_choice)
     st.plotly_chart(fig_area, use_container_width=True)
+    # explain cumulative + drivers
+    txt = explain_timeseries(aggs['monthly_sales'], date_col='Date', value_col='Sales')
+    # top contributors last vs prev month
+    last_month = fdf[fdf['Date'].dt.to_period('M') == fdf['Date'].dt.to_period('M').max()]
+    prev_month = fdf[fdf['Date'].dt.to_period('M') == (fdf['Date'].dt.to_period('M').max() - 1)]
+    gaining, losing = top_contributors_change(prev_month.groupby('Product')['Sales'].sum().reset_index(),
+                                              last_month.groupby('Product')['Sales'].sum().reset_index(),
+                                              top_n=3, value_col='Sales', key_col='Product')
+    st.markdown(f"**Insight — Cumulative:** {txt} Top gainers: {format_contribs(gaining)}. Top losers: {format_contribs(losing)}.")
 except Exception:
     pass
 
@@ -525,22 +648,32 @@ try:
         fig_heat = go.Figure(data=go.Heatmap(z=corrm.values, x=corrm.columns, y=corrm.columns, colorscale='RdBu', zmid=0))
         fig_heat.update_layout(title='Correlation Heatmap', template=theme_choice, height=420)
         st.plotly_chart(fig_heat, use_container_width=True)
+        st.markdown("**Insight — Correlations:** Check pairs with correlation magnitude > 0.5 for potential relationships (e.g., inventory vs sales may indicate stocking impact).")
 except Exception:
     pass
 
-# Bubble chart
+# Bubble chart: Cost vs Sales, size Inventory
 try:
-    bubble = aggs['product_agg'].rename(columns={'Inventory':'AvgInventory'})
+    bubble = aggs['product_agg'].rename(columns={'Inventory': 'AvgInventory'})
     fig_bub = px.scatter(bubble, x='Cost', y='Sales', size='AvgInventory', hover_name='Product', title='Cost vs Sales (bubble=size inventory)', template=theme_choice)
     st.plotly_chart(fig_bub, use_container_width=True)
+    # explain bubble
+    high_cost_low_sales = bubble[(bubble['Cost'] > bubble['Cost'].median()) & (bubble['Sales'] < bubble['Sales'].median())]
+    txt = "Products to check: high cost but low sales — possible pricing or sourcing issues."
+    if not high_cost_low_sales.empty:
+        sample = ", ".join(high_cost_low_sales.sort_values('Cost', ascending=False).head(3)['Product'].tolist())
+        txt += f" Examples: {sample}."
+    st.markdown(f"**Insight — Cost vs Sales:** {txt}")
 except Exception:
     pass
 
-# Donut chart
+# Donut chart category share
 try:
     cat_sales = fdf.groupby('Category')['Sales'].sum().reset_index()
     fig_donut = px.pie(cat_sales, names='Category', values='Sales', hole=0.45, title='Category Share (Donut)', template=theme_choice)
     st.plotly_chart(fig_donut, use_container_width=True)
+    txt = explain_treemap_or_donut(fdf, group_col='Category', value_col='Sales', prev_df=None)
+    st.markdown(f"**Insight — Category share:** {txt}")
 except Exception:
     pass
 
@@ -551,6 +684,13 @@ try:
     monthly_group = monthly_cat.groupby(['Month', 'Category'])['Sales'].sum().reset_index()
     fig_stacked = px.bar(monthly_group, x='Month', y='Sales', color='Category', title='Monthly Sales by Category (Stacked)', template=theme_choice)
     st.plotly_chart(fig_stacked, use_container_width=True)
+    # show which category gained/lost last month
+    last_month = fdf[fdf['Date'].dt.to_period('M') == fdf['Date'].dt.to_period('M').max()]
+    prev_month = fdf[fdf['Date'].dt.to_period('M') == (fdf['Date'].dt.to_period('M').max() - 1)]
+    gains_cat, losses_cat = top_contributors_change(prev_month.groupby('Category')['Sales'].sum().reset_index(),
+                                                    last_month.groupby('Category')['Sales'].sum().reset_index(),
+                                                    top_n=2, value_col='Sales', key_col='Category')
+    st.markdown(f"**Insight — Monthly by category:** Top gainers: {format_contribs(gains_cat)}. Top losers: {format_contribs(losses_cat)}.")
 except Exception:
     pass
 
@@ -558,7 +698,20 @@ except Exception:
 try:
     sales_ts = aggs['monthly_sales']
     fig_line = px.line(sales_ts, x='Date', y='Sales', title='Sales Trend (Line)', template=theme_choice)
+    # Add annotation for latest point
+    if not sales_ts.empty:
+        latest_date = sales_ts['Date'].max()
+        latest_val = float(sales_ts[sales_ts['Date'] == latest_date]['Sales'].iloc[0])
+        fig_line.add_annotation(x=latest_date, y=latest_val, text=f"Latest: {latest_val:,.0f}", showarrow=True, arrowhead=1)
     st.plotly_chart(fig_line, use_container_width=True)
+    # right-side compact insight card
+    cols_line = st.columns([3, 1])
+    with cols_line[0]:
+        txt = explain_timeseries(sales_ts, date_col='Date', value_col='Sales')
+        st.markdown(f"**Insight — Sales trend:** {txt}")
+    with cols_line[1]:
+        st.markdown("#### Quick actions")
+        st.markdown("- Check top losing SKUs\n- Verify promotions or stockouts\n- Review supplier lead times")
 except Exception:
     pass
 
@@ -589,7 +742,7 @@ ts = aggs['monthly_sales'].copy()
 if len(ts) < 3:
     st.info('Not enough history to run forecasting reliably (need >=3 monthly points).')
 else:
-    if fc_method == 'Prophet (if available)' and HAS_PROPHET:
+    if fc_method == 'Prophet (if available)' and 'HAS_PROPHET' in globals() and HAS_PROPHET:
         try:
             m = Prophet()
             df_prop = ts.rename(columns={'Date': 'ds', 'Sales': 'y'})
@@ -604,6 +757,7 @@ else:
             fig_f.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', name='Lower', line=dict(width=1), opacity=0.3))
             fig_f.update_layout(title='Prophet Forecast', template=theme_choice)
             st.plotly_chart(fig_f, use_container_width=True)
+            st.markdown("**Insight — Forecast:** Prophet forecasts shown with intervals. Check forecasted growth/decline against inventory planning.")
         except Exception as e:
             st.error(f'Prophet forecasting failed: {e}')
             logger.exception(e)
@@ -633,6 +787,7 @@ else:
             fig_lr.add_trace(go.Scatter(x=pred_df['Date'], y=pred_df['Predicted'], mode='lines+markers', name='Predicted'))
             fig_lr.update_layout(title='Linear Forecast (monthly)', template=theme_choice)
             st.plotly_chart(fig_lr, use_container_width=True)
+            st.markdown("**Insight — Forecast:** Linear projection shown. Use for quick planning; consider Prophet or more advanced models for seasonality.")
         except Exception as e:
             st.error(f'Linear regression forecasting error: {e}')
             logger.exception(e)
@@ -747,7 +902,7 @@ if HAS_SKLEARN:
     try:
         model_df = fdf.copy()
         model_df['Month'] = model_df['Date'].dt.to_period('M').dt.to_timestamp()
-        agg = model_df.groupby(['Product', 'Month']).agg({'Sales':'sum', 'Inventory':'mean', 'Lead_Time_Days':'mean', 'Cost':'mean'}).reset_index()
+        agg = model_df.groupby(['Product', 'Month']).agg({'Sales': 'sum', 'Inventory': 'mean', 'Lead_Time_Days': 'mean', 'Cost': 'mean'}).reset_index()
         X = agg[['Inventory', 'Lead_Time_Days', 'Cost']].fillna(0)
         y = agg['Sales'].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -796,4 +951,4 @@ st.dataframe(fdf.head(200))
 st.download_button('Download filtered data (CSV)', fdf.to_csv(index=False).encode('utf-8'), 'filtered_supply_data.csv', 'text/csv')
 
 st.markdown('---')
-st.caption('Enterprise Supply Chain Dashboard — enhanced. If you want I can (1) add Prophet interval tuning, (2) export executive summary PDF, (3) add push alerts/email integration, (4) schedule auto-refresh. Tell me which one to implement next.')
+st.caption('Enterprise Supply Chain Dashboard — rebuilt. If you want I can (1) add Prophet interval tuning, (2) export executive summary PDF, (3) add push alerts/email integration, (4) schedule auto-refresh. Tell me which one to implement next.')
