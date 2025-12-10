@@ -17,7 +17,7 @@ import streamlit as st
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("supply_chain_dashboard")
+logger = getLogger = logging.getLogger("supply_chain_dashboard")
 
 # -----------------------
 # Streamlit page config
@@ -256,7 +256,11 @@ st.sidebar.header("Dataset & Settings")
 if 'uploaded_dfs' not in st.session_state:
     st.session_state.uploaded_dfs = []
 
-uploaded_files = st.sidebar.file_uploader("Upload one or more CSVs (optional)", accept_multiple_files=True, type=["csv"])
+uploaded_files = st.sidebar.file_uploader(
+    "Upload one or more CSVs (optional)",
+    accept_multiple_files=True,
+    type=["csv"]
+)
 
 # When user uploads, read and append to session_state to avoid re-reading every rerun
 if uploaded_files:
@@ -264,6 +268,10 @@ if uploaded_files:
         try:
             # quick validate: read a small chunk first
             tmp = pd.read_csv(f, nrows=5)
+
+            # IMPORTANT: reset pointer before reading full file
+            f.seek(0)
+
             full = pd.read_csv(f)
             full = auto_clean_cached(full)
             st.session_state.uploaded_dfs.append(full)
@@ -271,7 +279,11 @@ if uploaded_files:
         except Exception as e:
             st.sidebar.error(f"Failed reading {getattr(f, 'name', 'file')}: {e}")
 
-dataset_option = st.sidebar.selectbox("Dataset source", ["Use uploaded file(s)", "Load demo dataset"], index=0 if st.session_state.uploaded_dfs else 1)
+dataset_option = st.sidebar.selectbox(
+    "Dataset source",
+    ["Use uploaded file(s)", "Load demo dataset"],
+    index=0 if st.session_state.uploaded_dfs else 1
+)
 
 if dataset_option == "Use uploaded file(s)" and st.session_state.uploaded_dfs:
     try:
@@ -445,7 +457,12 @@ def precompute_aggregates(fdf: pd.DataFrame) -> dict:
         # monthly sales
         monthly_sales = fdf.set_index('Date').resample('M')['Sales'].sum().reset_index().sort_values('Date')
         # product-level aggregates
-        product_agg = fdf.groupby('Product').agg({'Sales': 'sum', 'Inventory': 'mean', 'Lead_Time_Days': 'mean', 'Cost': 'mean'}).reset_index()
+        product_agg = fdf.groupby('Product').agg({
+            'Sales': 'sum',
+            'Inventory': 'mean',
+            'Lead_Time_Days': 'mean',
+            'Cost': 'mean'
+        }).reset_index()
         # category-product for treemap
         treemap_df = fdf.groupby(['Category', 'Product'])['Sales'].sum().reset_index()
         # supplier-category
@@ -459,6 +476,7 @@ def precompute_aggregates(fdf: pd.DataFrame) -> dict:
     except Exception as e:
         logger.exception('precompute failed')
         raise
+
 
 aggs = precompute_aggregates(fdf)
 
@@ -492,7 +510,10 @@ with ins_col1:
         recent_sales_ts = aggs['monthly_sales'].set_index('Date')['Sales'].sort_index()
         sales_trend_pct = None
         if len(recent_sales_ts) >= 2:
-            sales_trend_pct = (recent_sales_ts.iloc[-1] - recent_sales_ts.iloc[-2]) / (recent_sales_ts.iloc[-2] if recent_sales_ts.iloc[-2] != 0 else 1) * 100
+            sales_trend_pct = (
+                (recent_sales_ts.iloc[-1] - recent_sales_ts.iloc[-2]) /
+                (recent_sales_ts.iloc[-2] if recent_sales_ts.iloc[-2] != 0 else 1) * 100
+            )
         st.markdown('#### 📈 Sales Insight')
         if sales_trend_pct is not None:
             st.write(f"Sales change MoM: **{sales_trend_pct:.1f}%**")
@@ -600,7 +621,13 @@ st.header('Visual analysis — Mixed chart pack')
 # Treemap: Category -> Product
 try:
     treemap_df = aggs['treemap']
-    fig_treemap = px.treemap(treemap_df, path=['Category', 'Product'], values='Sales', title='Treemap: Sales by Category & Product', template=theme_choice)
+    fig_treemap = px.treemap(
+        treemap_df,
+        path=['Category', 'Product'],
+        values='Sales',
+        title='Treemap: Sales by Category & Product',
+        template=theme_choice
+    )
     st.plotly_chart(fig_treemap, use_container_width=True)
     # explain treemap
     txt = explain_treemap_or_donut(treemap_df, group_col='Category', value_col='Sales')
@@ -613,12 +640,21 @@ except Exception as e:
 if 'Supplier' in fdf.columns:
     try:
         sun = aggs['supplier_cat']
-        fig_sun = px.sunburst(sun, path=['Supplier', 'Category'], values='Sales', title='Supplier -> Category Sales (Sunburst)', template=theme_choice)
+        fig_sun = px.sunburst(
+            sun,
+            path=['Supplier', 'Category'],
+            values='Sales',
+            title='Supplier -> Category Sales (Sunburst)',
+            template=theme_choice
+        )
         st.plotly_chart(fig_sun, use_container_width=True)
         # explain sunburst - top supplier highlight
         top_sup = fdf.groupby('Supplier')['Sales'].sum().sort_values(ascending=False)
         if not top_sup.empty:
-            st.markdown(f"**Insight — Supplier:** Top supplier is **{top_sup.index[0]}** contributing ₹{top_sup.iloc[0]:,.0f} of filtered sales.")
+            st.markdown(
+                f"**Insight — Supplier:** Top supplier is **{top_sup.index[0]}** "
+                f"contributing ₹{top_sup.iloc[0]:,.0f} of filtered sales."
+            )
     except Exception:
         pass
 
@@ -626,17 +662,28 @@ if 'Supplier' in fdf.columns:
 try:
     area = aggs['monthly_sales'].copy()
     area['Cumulative'] = area['Sales'].cumsum()
-    fig_area = px.area(area, x='Date', y='Cumulative', title='Cumulative Sales Over Time', template=theme_choice)
+    fig_area = px.area(
+        area,
+        x='Date',
+        y='Cumulative',
+        title='Cumulative Sales Over Time',
+        template=theme_choice
+    )
     st.plotly_chart(fig_area, use_container_width=True)
     # explain cumulative + drivers
     txt = explain_timeseries(aggs['monthly_sales'], date_col='Date', value_col='Sales')
     # top contributors last vs prev month
     last_month = fdf[fdf['Date'].dt.to_period('M') == fdf['Date'].dt.to_period('M').max()]
     prev_month = fdf[fdf['Date'].dt.to_period('M') == (fdf['Date'].dt.to_period('M').max() - 1)]
-    gaining, losing = top_contributors_change(prev_month.groupby('Product')['Sales'].sum().reset_index(),
-                                              last_month.groupby('Product')['Sales'].sum().reset_index(),
-                                              top_n=3, value_col='Sales', key_col='Product')
-    st.markdown(f"**Insight — Cumulative:** {txt} Top gainers: {format_contribs(gaining)}. Top losers: {format_contribs(losing)}.")
+    gaining, losing = top_contributors_change(
+        prev_month.groupby('Product')['Sales'].sum().reset_index(),
+        last_month.groupby('Product')['Sales'].sum().reset_index(),
+        top_n=3, value_col='Sales', key_col='Product'
+    )
+    st.markdown(
+        f"**Insight — Cumulative:** {txt} "
+        f"Top gainers: {format_contribs(gaining)}. Top losers: {format_contribs(losing)}."
+    )
 except Exception:
     pass
 
@@ -645,23 +692,41 @@ try:
     numeric_cols = [c for c in ['Sales', 'Inventory', 'Lead_Time_Days', 'Cost'] if c in fdf.columns]
     if len(numeric_cols) >= 2:
         corrm = fdf[numeric_cols].corr()
-        fig_heat = go.Figure(data=go.Heatmap(z=corrm.values, x=corrm.columns, y=corrm.columns, colorscale='RdBu', zmid=0))
+        fig_heat = go.Figure(
+            data=go.Heatmap(z=corrm.values, x=corrm.columns, y=corrm.columns, colorscale='RdBu', zmid=0)
+        )
         fig_heat.update_layout(title='Correlation Heatmap', template=theme_choice, height=420)
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.markdown("**Insight — Correlations:** Check pairs with correlation magnitude > 0.5 for potential relationships (e.g., inventory vs sales may indicate stocking impact).")
+        st.markdown(
+            "**Insight — Correlations:** Check pairs with correlation magnitude > 0.5 "
+            "for potential relationships (e.g., inventory vs sales may indicate stocking impact)."
+        )
 except Exception:
     pass
 
 # Bubble chart: Cost vs Sales, size Inventory
 try:
     bubble = aggs['product_agg'].rename(columns={'Inventory': 'AvgInventory'})
-    fig_bub = px.scatter(bubble, x='Cost', y='Sales', size='AvgInventory', hover_name='Product', title='Cost vs Sales (bubble=size inventory)', template=theme_choice)
+    fig_bub = px.scatter(
+        bubble,
+        x='Cost',
+        y='Sales',
+        size='AvgInventory',
+        hover_name='Product',
+        title='Cost vs Sales (bubble=size inventory)',
+        template=theme_choice
+    )
     st.plotly_chart(fig_bub, use_container_width=True)
     # explain bubble
-    high_cost_low_sales = bubble[(bubble['Cost'] > bubble['Cost'].median()) & (bubble['Sales'] < bubble['Sales'].median())]
+    high_cost_low_sales = bubble[
+        (bubble['Cost'] > bubble['Cost'].median()) &
+        (bubble['Sales'] < bubble['Sales'].median())
+    ]
     txt = "Products to check: high cost but low sales — possible pricing or sourcing issues."
     if not high_cost_low_sales.empty:
-        sample = ", ".join(high_cost_low_sales.sort_values('Cost', ascending=False).head(3)['Product'].tolist())
+        sample = ", ".join(
+            high_cost_low_sales.sort_values('Cost', ascending=False).head(3)['Product'].tolist()
+        )
         txt += f" Examples: {sample}."
     st.markdown(f"**Insight — Cost vs Sales:** {txt}")
 except Exception:
@@ -670,7 +735,14 @@ except Exception:
 # Donut chart category share
 try:
     cat_sales = fdf.groupby('Category')['Sales'].sum().reset_index()
-    fig_donut = px.pie(cat_sales, names='Category', values='Sales', hole=0.45, title='Category Share (Donut)', template=theme_choice)
+    fig_donut = px.pie(
+        cat_sales,
+        names='Category',
+        values='Sales',
+        hole=0.45,
+        title='Category Share (Donut)',
+        template=theme_choice
+    )
     st.plotly_chart(fig_donut, use_container_width=True)
     txt = explain_treemap_or_donut(fdf, group_col='Category', value_col='Sales', prev_df=None)
     st.markdown(f"**Insight — Category share:** {txt}")
@@ -682,27 +754,51 @@ try:
     monthly_cat = fdf.copy()
     monthly_cat['Month'] = monthly_cat['Date'].dt.to_period('M').dt.to_timestamp()
     monthly_group = monthly_cat.groupby(['Month', 'Category'])['Sales'].sum().reset_index()
-    fig_stacked = px.bar(monthly_group, x='Month', y='Sales', color='Category', title='Monthly Sales by Category (Stacked)', template=theme_choice)
+    fig_stacked = px.bar(
+        monthly_group,
+        x='Month',
+        y='Sales',
+        color='Category',
+        title='Monthly Sales by Category (Stacked)',
+        template=theme_choice
+    )
     st.plotly_chart(fig_stacked, use_container_width=True)
     # show which category gained/lost last month
     last_month = fdf[fdf['Date'].dt.to_period('M') == fdf['Date'].dt.to_period('M').max()]
     prev_month = fdf[fdf['Date'].dt.to_period('M') == (fdf['Date'].dt.to_period('M').max() - 1)]
-    gains_cat, losses_cat = top_contributors_change(prev_month.groupby('Category')['Sales'].sum().reset_index(),
-                                                    last_month.groupby('Category')['Sales'].sum().reset_index(),
-                                                    top_n=2, value_col='Sales', key_col='Category')
-    st.markdown(f"**Insight — Monthly by category:** Top gainers: {format_contribs(gains_cat)}. Top losers: {format_contribs(losses_cat)}.")
+    gains_cat, losses_cat = top_contributors_change(
+        prev_month.groupby('Category')['Sales'].sum().reset_index(),
+        last_month.groupby('Category')['Sales'].sum().reset_index(),
+        top_n=2, value_col='Sales', key_col='Category'
+    )
+    st.markdown(
+        f"**Insight — Monthly by category:** "
+        f"Top gainers: {format_contribs(gains_cat)}. Top losers: {format_contribs(losses_cat)}."
+    )
 except Exception:
     pass
 
 # Simple sales line
 try:
     sales_ts = aggs['monthly_sales']
-    fig_line = px.line(sales_ts, x='Date', y='Sales', title='Sales Trend (Line)', template=theme_choice)
+    fig_line = px.line(
+        sales_ts,
+        x='Date',
+        y='Sales',
+        title='Sales Trend (Line)',
+        template=theme_choice
+    )
     # Add annotation for latest point
     if not sales_ts.empty:
         latest_date = sales_ts['Date'].max()
         latest_val = float(sales_ts[sales_ts['Date'] == latest_date]['Sales'].iloc[0])
-        fig_line.add_annotation(x=latest_date, y=latest_val, text=f"Latest: {latest_val:,.0f}", showarrow=True, arrowhead=1)
+        fig_line.add_annotation(
+            x=latest_date,
+            y=latest_val,
+            text=f"Latest: {latest_val:,.0f}",
+            showarrow=True,
+            arrowhead=1
+        )
     st.plotly_chart(fig_line, use_container_width=True)
     # right-side compact insight card
     cols_line = st.columns([3, 1])
@@ -753,11 +849,20 @@ else:
             fig_f = go.Figure()
             fig_f.add_trace(go.Scatter(x=df_prop['ds'], y=df_prop['y'], mode='lines+markers', name='Actual'))
             fig_f.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecast'))
-            fig_f.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', name='Upper', line=dict(width=1), opacity=0.3))
-            fig_f.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', name='Lower', line=dict(width=1), opacity=0.3))
+            fig_f.add_trace(go.Scatter(
+                x=forecast['ds'], y=forecast['yhat_upper'],
+                mode='lines', name='Upper', line=dict(width=1), opacity=0.3
+            ))
+            fig_f.add_trace(go.Scatter(
+                x=forecast['ds'], y=forecast['yhat_lower'],
+                mode='lines', name='Lower', line=dict(width=1), opacity=0.3
+            ))
             fig_f.update_layout(title='Prophet Forecast', template=theme_choice)
             st.plotly_chart(fig_f, use_container_width=True)
-            st.markdown("**Insight — Forecast:** Prophet forecasts shown with intervals. Check forecasted growth/decline against inventory planning.")
+            st.markdown(
+                "**Insight — Forecast:** Prophet forecasts shown with intervals. "
+                "Check forecasted growth/decline against inventory planning."
+            )
         except Exception as e:
             st.error(f'Prophet forecasting failed: {e}')
             logger.exception(e)
@@ -783,11 +888,20 @@ else:
             pred_df = pd.DataFrame({'Date': future_dates, 'Predicted': preds})
 
             fig_lr = go.Figure()
-            fig_lr.add_trace(go.Scatter(x=ts_sorted['Date'], y=ts_sorted['Sales'], mode='lines+markers', name='Actual'))
-            fig_lr.add_trace(go.Scatter(x=pred_df['Date'], y=pred_df['Predicted'], mode='lines+markers', name='Predicted'))
+            fig_lr.add_trace(go.Scatter(
+                x=ts_sorted['Date'], y=ts_sorted['Sales'],
+                mode='lines+markers', name='Actual'
+            ))
+            fig_lr.add_trace(go.Scatter(
+                x=pred_df['Date'], y=pred_df['Predicted'],
+                mode='lines+markers', name='Predicted'
+            ))
             fig_lr.update_layout(title='Linear Forecast (monthly)', template=theme_choice)
             st.plotly_chart(fig_lr, use_container_width=True)
-            st.markdown("**Insight — Forecast:** Linear projection shown. Use for quick planning; consider Prophet or more advanced models for seasonality.")
+            st.markdown(
+                "**Insight — Forecast:** Linear projection shown. Use for quick planning; "
+                "consider Prophet or more advanced models for seasonality."
+            )
         except Exception as e:
             st.error(f'Linear regression forecasting error: {e}')
             logger.exception(e)
@@ -803,7 +917,11 @@ try:
         'Sales': 'sum',
         'Inventory': 'mean',
         'Lead_Time_Days': 'mean'
-    }).reset_index().rename(columns={'Sales': 'TotalSales', 'Inventory': 'AvgInventory', 'Lead_Time_Days': 'AvgLeadDays'})
+    }).reset_index().rename(columns={
+        'Sales': 'TotalSales',
+        'Inventory': 'AvgInventory',
+        'Lead_Time_Days': 'AvgLeadDays'
+    })
 
     period_days = (fdf['Date'].max() - fdf['Date'].min()).days or 1
     prod_stats['AnnualDemand'] = prod_stats['TotalSales'] * (365.0 / period_days)
@@ -813,13 +931,22 @@ try:
     prod_stats['UnitCost'] = prod_stats['Product'].map(lambda p: cost_map.get(p, 0))
     prod_stats['HoldingCostPerUnit'] = prod_stats['UnitCost'] * (annual_holding_rate_pct / 100.0)
 
-    prod_stats['EOQ'] = np.sqrt((2 * prod_stats['AnnualDemand'] * ordering_cost) / (prod_stats['HoldingCostPerUnit'].replace(0, np.nan)))
+    prod_stats['EOQ'] = np.sqrt(
+        (2 * prod_stats['AnnualDemand'] * ordering_cost) /
+        (prod_stats['HoldingCostPerUnit'].replace(0, np.nan))
+    )
     prod_stats['EOQ'] = prod_stats['EOQ'].fillna(0).round().astype(int)
 
     prod_stats['DailyDemand'] = prod_stats['AnnualDemand'] / 365.0
-    prod_stats['ROP'] = (prod_stats['DailyDemand'] * (prod_stats['AvgLeadDays'].fillna(lead_time_days_default))).round().astype(int)
+    prod_stats['ROP'] = (
+        prod_stats['DailyDemand'] * (prod_stats['AvgLeadDays'].fillna(lead_time_days_default))
+    ).round().astype(int)
 
-    st.dataframe(prod_stats[['Product', 'AnnualDemand', 'EOQ', 'ROP', 'AvgInventory', 'AvgLeadDays']].sort_values('EOQ', ascending=False).head(50))
+    st.dataframe(
+        prod_stats[['Product', 'AnnualDemand', 'EOQ', 'ROP', 'AvgInventory', 'AvgLeadDays']]
+        .sort_values('EOQ', ascending=False)
+        .head(50)
+    )
     csv_eoq = prod_stats.to_csv(index=False).encode('utf-8')
     st.download_button('Download EOQ/ROP table', csv_eoq, 'eoq_rop.csv', 'text/csv')
 except Exception as e:
@@ -837,7 +964,10 @@ try:
     prod_stats['ROP'] = prod_stats['ROP'].fillna(0)
 
     critical = prod_stats[prod_stats['AvgInventory'] < prod_stats['ROP']]
-    warning = prod_stats[(prod_stats['AvgInventory'] >= prod_stats['ROP']) & (prod_stats['AvgInventory'] < prod_stats['ROP'] * 1.5)]
+    warning = prod_stats[
+        (prod_stats['AvgInventory'] >= prod_stats['ROP']) &
+        (prod_stats['AvgInventory'] < prod_stats['ROP'] * 1.5)
+    ]
 
     if not critical.empty:
         st.error(f"CRITICAL: {len(critical)} products below ROP (immediate attention).")
@@ -875,7 +1005,12 @@ try:
         z = (arr - np.nanmean(arr)) / (np.nanstd(arr) if np.nanstd(arr) != 0 else 1)
         idx = np.where(np.abs(z) > 3)[0]
         for i in idx:
-            anomalies.append({'Product': prod, 'Week': g.iloc[i]['Date'], 'Sales': int(g.iloc[i]['Sales']), 'Z': float(z[i])})
+            anomalies.append({
+                'Product': prod,
+                'Week': g.iloc[i]['Date'],
+                'Sales': int(g.iloc[i]['Sales']),
+                'Z': float(z[i])
+            })
     if anomalies:
         st.warning(f'Detected {len(anomalies)} anomalies in weekly sales.')
         st.dataframe(pd.DataFrame(anomalies).head(50))
@@ -902,7 +1037,12 @@ if HAS_SKLEARN:
     try:
         model_df = fdf.copy()
         model_df['Month'] = model_df['Date'].dt.to_period('M').dt.to_timestamp()
-        agg = model_df.groupby(['Product', 'Month']).agg({'Sales': 'sum', 'Inventory': 'mean', 'Lead_Time_Days': 'mean', 'Cost': 'mean'}).reset_index()
+        agg = model_df.groupby(['Product', 'Month']).agg({
+            'Sales': 'sum',
+            'Inventory': 'mean',
+            'Lead_Time_Days': 'mean',
+            'Cost': 'mean'
+        }).reset_index()
         X = agg[['Inventory', 'Lead_Time_Days', 'Cost']].fillna(0)
         y = agg['Sales'].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -948,7 +1088,16 @@ st.markdown('---')
 st.header('Filtered dataset & download')
 
 st.dataframe(fdf.head(200))
-st.download_button('Download filtered data (CSV)', fdf.to_csv(index=False).encode('utf-8'), 'filtered_supply_data.csv', 'text/csv')
+st.download_button(
+    'Download filtered data (CSV)',
+    fdf.to_csv(index=False).encode('utf-8'),
+    'filtered_supply_data.csv',
+    'text/csv'
+)
 
 st.markdown('---')
-st.caption('Enterprise Supply Chain Dashboard — rebuilt. If you want I can (1) add Prophet interval tuning, (2) export executive summary PDF, (3) add push alerts/email integration, (4) schedule auto-refresh. Tell me which one to implement next.')
+st.caption(
+    'Enterprise Supply Chain Dashboard — rebuilt. '
+    'If you want I can (1) add Prophet interval tuning, (2) export executive summary PDF, '
+    '(3) add push alerts/email integration, (4) schedule auto-refresh.'
+)
