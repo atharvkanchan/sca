@@ -17,7 +17,7 @@ import streamlit as st
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
-logger = getLogger = logging.getLogger("supply_chain_dashboard")
+logger = logging.getLogger("supply_chain_dashboard")
 
 # -----------------------
 # Streamlit page config
@@ -30,9 +30,9 @@ st.title("🏬 Fashion Supply Chain Management Dashboard ")
 # -----------------------
 COMMON_COLS = {
     "date": ["date", "order_date", "sale_date", "timestamp"],
-    "product": ["product", "product_name", "sku", "item"],
+    "product": ["product", "product_name", "sku", "item", "product_sku"],
     "category": ["category", "cat", "product_category"],
-    "sales": ["sales", "revenue", "amount", "total_sales"],
+    "sales": ["sales", "revenue", "amount", "total_sales", "net_sales"],
     "inventory": ["inventory", "stock", "on_hand"],
     "lead": ["lead_time", "lead_time_days"],
     "cost": ["cost", "unit_cost", "cost_price"],
@@ -155,8 +155,10 @@ def trend_slope_text(dates, values):
     if len(values) < 3:
         return ""
     # convert dates to month index to avoid numeric instability
-    months = ((pd.to_datetime(dates).dt.year - pd.to_datetime(dates).dt.year.min()) * 12 +
-              pd.to_datetime(dates).dt.month).astype(int)
+    months = (
+        (pd.to_datetime(dates).dt.year - pd.to_datetime(dates).dt.year.min()) * 12
+        + pd.to_datetime(dates).dt.month
+    ).astype(int)
     coef = np.polyfit(months, values, 1)
     slope = coef[0]
     if abs(slope) < 1e-8:
@@ -409,19 +411,40 @@ with st.sidebar.form('filters_form'):
     suppliers = sorted(df['Supplier'].dropna().unique())
 
     selected_cats = st.multiselect('Categories', categories, default=categories)
-    selected_prods = st.multiselect('Products (top 50 shown)', products[:50], default=products[:min(50, len(products))])
+    selected_prods = st.multiselect(
+        'Products (top 50 shown)',
+        products[:50],
+        default=products[:min(50, len(products))]
+    )
     selected_sups = st.multiselect('Suppliers', suppliers, default=suppliers)
 
-    date_range = st.date_input('Date range', [min_date, max_date], min_value=min_date, max_value=max_date)
+    date_range = st.date_input(
+        'Date range',
+        [min_date, max_date],
+        min_value=min_date,
+        max_value=max_date
+    )
 
     # theme
     theme_choice = st.selectbox('Theme', ['plotly_white', 'ggplot2', 'seaborn'])
 
     # EOQ params
     st.markdown('**EOQ / ROP Settings**')
-    annual_holding_rate_pct = st.number_input('Annual holding cost rate (%)', value=20.0, min_value=0.0)
-    ordering_cost = st.number_input('Ordering cost per order (₹)', value=500.0, min_value=0.0)
-    lead_time_days_default = st.number_input('Default lead time (days)', value=7, min_value=0)
+    annual_holding_rate_pct = st.number_input(
+        'Annual holding cost rate (%)',
+        value=20.0,
+        min_value=0.0
+    )
+    ordering_cost = st.number_input(
+        'Ordering cost per order (₹)',
+        value=500.0,
+        min_value=0.0
+    )
+    lead_time_days_default = st.number_input(
+        'Default lead time (days)',
+        value=7,
+        min_value=0
+    )
 
     apply_filters = st.form_submit_button('Apply filters')
 
@@ -438,7 +461,8 @@ fdf = df[
     (df['Category'].isin(selected_cats)) &
     (df['Product'].isin(selected_prods)) &
     (df['Supplier'].isin(selected_sups)) &
-    (df['Date'] >= start_date) & (df['Date'] <= end_date)
+    (df['Date'] >= start_date) &
+    (df['Date'] <= end_date)
 ].copy()
 
 if fdf.empty:
@@ -455,14 +479,24 @@ st.caption(f"Rows: {len(fdf):,} • Date range: {fdf['Date'].min().date()} — {
 def precompute_aggregates(fdf: pd.DataFrame) -> dict:
     try:
         # monthly sales
-        monthly_sales = fdf.set_index('Date').resample('M')['Sales'].sum().reset_index().sort_values('Date')
+        monthly_sales = (
+            fdf.set_index('Date')
+            .resample('M')['Sales']
+            .sum()
+            .reset_index()
+            .sort_values('Date')
+        )
         # product-level aggregates
-        product_agg = fdf.groupby('Product').agg({
-            'Sales': 'sum',
-            'Inventory': 'mean',
-            'Lead_Time_Days': 'mean',
-            'Cost': 'mean'
-        }).reset_index()
+        product_agg = (
+            fdf.groupby('Product')
+            .agg({
+                'Sales': 'sum',
+                'Inventory': 'mean',
+                'Lead_Time_Days': 'mean',
+                'Cost': 'mean'
+            })
+            .reset_index()
+        )
         # category-product for treemap
         treemap_df = fdf.groupby(['Category', 'Product'])['Sales'].sum().reset_index()
         # supplier-category
@@ -525,13 +559,20 @@ with ins_col1:
 
 with ins_col2:
     try:
-        low_products = aggs['product_agg'][['Product', 'Inventory']].rename(columns={'Inventory': 'AvgInventory'})
+        low_products = aggs['product_agg'][['Product', 'Inventory']].rename(
+            columns={'Inventory': 'AvgInventory'}
+        )
         low_count = int((low_products['AvgInventory'] < 20).sum())
         st.markdown('#### 📦 Inventory Insight')
         st.write(f"Products with avg inventory < 20 units: **{low_count}**")
         if low_count > 0:
-            sample = low_products[low_products['AvgInventory'] < 20].sort_values('AvgInventory').head(5)
-            st.write(sample.to_dict(orient='records'))
+            sample = (
+                low_products[low_products['AvgInventory'] < 20]
+                .sort_values('AvgInventory')
+                .head(5)
+            )
+            st.markdown("Low inventory products (sample):")
+            st.table(sample)
     except Exception as e:
         st.info('Inventory insight unavailable')
         logger.exception(e)
@@ -541,7 +582,10 @@ with ins_col3:
         sup_stats = fdf.groupby('Supplier')['Sales'].sum().sort_values(ascending=False)
         st.markdown('#### 🏷️ Supplier Insight')
         if not sup_stats.empty:
-            st.write(f"Top supplier by sales: **{sup_stats.index[0]}** (₹{sup_stats.iloc[0]:,.0f})")
+            st.write(
+                f"Top supplier by sales: **{sup_stats.index[0]}** "
+                f"(₹{sup_stats.iloc[0]:,.0f})"
+            )
         else:
             st.write('No supplier data')
     except Exception as e:
@@ -586,7 +630,9 @@ def executive_summary(df_in):
         prod_low = s.groupby('Product')['Inventory'].mean()
         low = prod_low[prod_low < 20].shape[0]
         if low > 0:
-            lines.append(f"{low} products have average inventory below 20 units — consider restock.")
+            lines.append(
+                f"{low} products have average inventory below 20 units — consider restock."
+            )
     except Exception:
         pass
     # Supplier risk
@@ -596,7 +642,10 @@ def executive_summary(df_in):
             if not risk.empty:
                 top_r = risk.iloc[0]
                 if top_r['risk_score'] > 50:
-                    lines.append(f"Supplier risk flagged: {top_r['Supplier']} (risk score {top_r['risk_score']:.0f}).")
+                    lines.append(
+                        f"Supplier risk flagged: {top_r['Supplier']} "
+                        f"(risk score {top_r['risk_score']:.0f})."
+                    )
     except Exception:
         pass
     # Add data window
@@ -693,7 +742,13 @@ try:
     if len(numeric_cols) >= 2:
         corrm = fdf[numeric_cols].corr()
         fig_heat = go.Figure(
-            data=go.Heatmap(z=corrm.values, x=corrm.columns, y=corrm.columns, colorscale='RdBu', zmid=0)
+            data=go.Heatmap(
+                z=corrm.values,
+                x=corrm.columns,
+                y=corrm.columns,
+                colorscale='RdBu',
+                zmid=0
+            )
         )
         fig_heat.update_layout(title='Correlation Heatmap', template=theme_choice, height=420)
         st.plotly_chart(fig_heat, use_container_width=True)
@@ -818,7 +873,12 @@ st.markdown('---')
 st.header('Forecasting & what-if')
 
 fc_method = st.selectbox('Forecasting method', ['Prophet (if available)', 'Linear Regression'], index=0)
-horizon_months = st.number_input('Forecast horizon (months)', min_value=1, max_value=24, value=3)
+horizon_months = st.number_input(
+    'Forecast horizon (months)',
+    min_value=1,
+    max_value=24,
+    value=3
+)
 
 if fc_method.startswith('Prophet'):
     # try to import prophet lazily
@@ -847,15 +907,33 @@ else:
             forecast = m.predict(future)
             # safer plot: plot actuals and forecast separately
             fig_f = go.Figure()
-            fig_f.add_trace(go.Scatter(x=df_prop['ds'], y=df_prop['y'], mode='lines+markers', name='Actual'))
-            fig_f.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecast'))
             fig_f.add_trace(go.Scatter(
-                x=forecast['ds'], y=forecast['yhat_upper'],
-                mode='lines', name='Upper', line=dict(width=1), opacity=0.3
+                x=df_prop['ds'],
+                y=df_prop['y'],
+                mode='lines+markers',
+                name='Actual'
             ))
             fig_f.add_trace(go.Scatter(
-                x=forecast['ds'], y=forecast['yhat_lower'],
-                mode='lines', name='Lower', line=dict(width=1), opacity=0.3
+                x=forecast['ds'],
+                y=forecast['yhat'],
+                mode='lines',
+                name='Forecast'
+            ))
+            fig_f.add_trace(go.Scatter(
+                x=forecast['ds'],
+                y=forecast['yhat_upper'],
+                mode='lines',
+                name='Upper',
+                line=dict(width=1),
+                opacity=0.3
+            ))
+            fig_f.add_trace(go.Scatter(
+                x=forecast['ds'],
+                y=forecast['yhat_lower'],
+                mode='lines',
+                name='Lower',
+                line=dict(width=1),
+                opacity=0.3
             ))
             fig_f.update_layout(title='Prophet Forecast', template=theme_choice)
             st.plotly_chart(fig_f, use_container_width=True)
@@ -870,13 +948,14 @@ else:
         # safer linear regression using month index
         try:
             ts_sorted = ts.sort_values('Date').reset_index(drop=True)
-            # Month index since start (1-based)
+            # Month index since start
             start_year = ts_sorted['Date'].dt.year.min()
-            start_month = ts_sorted['Date'].dt.month.min()
-            ts_sorted['MonthIdx'] = (ts_sorted['Date'].dt.year - start_year) * 12 + ts_sorted['Date'].dt.month
+            ts_sorted['MonthIdx'] = (
+                ts_sorted['Date'].dt.year - start_year
+            ) * 12 + ts_sorted['Date'].dt.month
             X = ts_sorted['MonthIdx'].values
-            y = ts_sorted['Sales'].values
-            coef = np.polyfit(X, y, 1)
+            y_vals = ts_sorted['Sales'].values
+            coef = np.polyfit(X, y_vals, 1)
             poly = np.poly1d(coef)
 
             last_idx = X.max()
@@ -884,17 +963,23 @@ else:
             preds = poly(future_idx)
 
             last_date = ts_sorted['Date'].max()
-            future_dates = [last_date + pd.DateOffset(months=i) for i in range(1, horizon_months + 1)]
+            future_dates = [
+                last_date + pd.DateOffset(months=i) for i in range(1, horizon_months + 1)
+            ]
             pred_df = pd.DataFrame({'Date': future_dates, 'Predicted': preds})
 
             fig_lr = go.Figure()
             fig_lr.add_trace(go.Scatter(
-                x=ts_sorted['Date'], y=ts_sorted['Sales'],
-                mode='lines+markers', name='Actual'
+                x=ts_sorted['Date'],
+                y=ts_sorted['Sales'],
+                mode='lines+markers',
+                name='Actual'
             ))
             fig_lr.add_trace(go.Scatter(
-                x=pred_df['Date'], y=pred_df['Predicted'],
-                mode='lines+markers', name='Predicted'
+                x=pred_df['Date'],
+                y=pred_df['Predicted'],
+                mode='lines+markers',
+                name='Predicted'
             ))
             fig_lr.update_layout(title='Linear Forecast (monthly)', template=theme_choice)
             st.plotly_chart(fig_lr, use_container_width=True)
@@ -913,15 +998,20 @@ st.markdown('---')
 st.header('Inventory calculations: EOQ & ROP')
 
 try:
-    prod_stats = fdf.groupby('Product').agg({
-        'Sales': 'sum',
-        'Inventory': 'mean',
-        'Lead_Time_Days': 'mean'
-    }).reset_index().rename(columns={
-        'Sales': 'TotalSales',
-        'Inventory': 'AvgInventory',
-        'Lead_Time_Days': 'AvgLeadDays'
-    })
+    prod_stats = (
+        fdf.groupby('Product')
+        .agg({
+            'Sales': 'sum',
+            'Inventory': 'mean',
+            'Lead_Time_Days': 'mean'
+        })
+        .reset_index()
+        .rename(columns={
+            'Sales': 'TotalSales',
+            'Inventory': 'AvgInventory',
+            'Lead_Time_Days': 'AvgLeadDays'
+        })
+    )
 
     period_days = (fdf['Date'].max() - fdf['Date'].min()).days or 1
     prod_stats['AnnualDemand'] = prod_stats['TotalSales'] * (365.0 / period_days)
@@ -996,7 +1086,13 @@ if 'Supplier' in fdf.columns:
 # -----------------------
 st.subheader('Anomaly detection (sales)')
 try:
-    weekly = fdf.set_index('Date').groupby('Product')['Sales'].resample('W').sum().reset_index()
+    weekly = (
+        fdf.set_index('Date')
+        .groupby('Product')['Sales']
+        .resample('W')
+        .sum()
+        .reset_index()
+    )
     anomalies = []
     for prod, g in weekly.groupby('Product'):
         arr = g['Sales'].values
@@ -1037,20 +1133,29 @@ if HAS_SKLEARN:
     try:
         model_df = fdf.copy()
         model_df['Month'] = model_df['Date'].dt.to_period('M').dt.to_timestamp()
-        agg = model_df.groupby(['Product', 'Month']).agg({
-            'Sales': 'sum',
-            'Inventory': 'mean',
-            'Lead_Time_Days': 'mean',
-            'Cost': 'mean'
-        }).reset_index()
+        agg = (
+            model_df.groupby(['Product', 'Month'])
+            .agg({
+                'Sales': 'sum',
+                'Inventory': 'mean',
+                'Lead_Time_Days': 'mean',
+                'Cost': 'mean'
+            })
+            .reset_index()
+        )
         X = agg[['Inventory', 'Lead_Time_Days', 'Cost']].fillna(0)
-        y = agg['Sales'].values
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        y_vals = agg['Sales'].values
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y_vals, test_size=0.2, random_state=42
+        )
         rf = RandomForestRegressor(n_estimators=100, random_state=42)
         rf.fit(X_train, y_train)
         feats = X.columns.tolist()
         importances = rf.feature_importances_
-        fi = pd.DataFrame({'feature': feats, 'importance': importances}).sort_values('importance', ascending=False)
+        fi = (
+            pd.DataFrame({'feature': feats, 'importance': importances})
+            .sort_values('importance', ascending=False)
+        )
         st.write('Feature importances (RandomForest):')
         st.dataframe(fi)
         fig_fi = px.bar(fi, x='feature', y='importance', title='Feature importances')
