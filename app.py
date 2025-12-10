@@ -23,7 +23,7 @@ logger = logging.getLogger("supply_chain_dashboard")
 # Streamlit page config
 # -----------------------
 st.set_page_config(page_title="Enterprise Fashion Supply Chain Dashboard", layout="wide")
-st.title("🏬 Fashion Supply Chain Dashboard ")
+st.title("🏬 Fashion Supply Chain Management Dashboard ")
 
 # -----------------------
 # Helper utilities
